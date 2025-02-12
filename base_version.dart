@@ -70,16 +70,33 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  final List<Widget> _pages = [];
-
   @override
-  void initState() {
-    super.initState();
-    _pages.addAll([
-      _buildSongsList(),
-      _buildMusicPlayer(),
-      _buildSettings(),
-    ]);
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Flutter Music Player')),
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _currentIndex,
+            children: [
+              _buildSongsList(),
+              _buildMusicPlayer(),
+              _buildSettings(),
+            ],
+          ),
+          if (_isPlaying) _buildMiniPlayer(),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Songs'),
+          BottomNavigationBarItem(icon: Icon(Icons.music_note), label: 'Player'),
+          BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
+        ],
+      ),
+    );
   }
 
   Widget _buildSongsList() {
@@ -90,11 +107,12 @@ class _MainScreenState extends State<MainScreen> {
           child: const Text('Load Songs'),
         ),
         Expanded(
-          child: ListView.builder(
+          child: ListView.separated(
             itemCount: _songs.length,
+            separatorBuilder: (context, index) => const Divider(),
             itemBuilder: (context, index) {
               return ListTile(
-                title: Text('Song ${index + 1}'),
+                title: Text(_songs[index].split('/').last),
                 leading: const Icon(Icons.music_note),
                 onTap: () {
                   _currentSongIndex = index;
@@ -113,7 +131,7 @@ class _MainScreenState extends State<MainScreen> {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Text('Now Playing: Song ${_currentSongIndex + 1}',
+        Text('Now Playing: ${_songs.isNotEmpty ? _songs[_currentSongIndex].split('/').last : "No Song"}',
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
         const SizedBox(height: 20),
         Row(
@@ -137,26 +155,46 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  Widget _buildSettings() {
-    return const Center(
-      child: Text('Settings Page - Coming Soon!', style: TextStyle(fontSize: 20)),
+  Widget _buildMiniPlayer() {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        color: Colors.grey[300],
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                _songs.isNotEmpty ? _songs[_currentSongIndex].split('/').last : "No Song",
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.skip_previous),
+                  onPressed: _previousSong,
+                ),
+                IconButton(
+                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+                  onPressed: () => _isPlaying ? _pauseSong() : _playSong(_songs[_currentSongIndex]),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.skip_next),
+                  onPressed: _nextSong,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Flutter Music Player')),
-      body: _pages[_currentIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Songs'),
-          BottomNavigationBarItem(icon: Icon(Icons.music_note), label: 'Player'),
-          BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
-        ],
-      ),
+  Widget _buildSettings() {
+    return const Center(
+      child: Text('Settings Page - Coming Soon!', style: TextStyle(fontSize: 20)),
     );
   }
 }
