@@ -1,315 +1,699 @@
+import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(MyApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+///
+/// Ensure your pubspec.yaml includes:
+///   audioplayers: ^6.1.2
+///   permission_handler: ^11.3.1
+///   file_picker: ^5.2.2
+///   path_provider: ^2.0.15
+///
+/// Also configure your native splash screen and app icon to use
+/// assets/song_logo.png (which should have a transparent background).
+///
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Flutter Music Player',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
-      home: const MainScreen(),
+enum RepeatModeCustom { none, one, all }
+
+/// Returns a simple gradient based on brightness.
+LinearGradient getGradient(Brightness brightness) {
+  if (brightness == Brightness.dark) {
+    return LinearGradient(
+      colors: [Colors.black, Colors.grey.shade900],
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+    );
+  } else {
+    return LinearGradient(
+      colors: [Colors.white, Colors.grey.shade300],
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
     );
   }
 }
 
-class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
-
+class MyApp extends StatefulWidget {
   @override
-  _MainScreenState createState() => _MainScreenState();
+  _MyAppState createState() => _MyAppState();
 }
 
-class _MainScreenState extends State<MainScreen> {
-  int _currentIndex = 0;
+/// The app supports light and dark modes.
+class _MyAppState extends State<MyApp> {
+  bool isDarkMode = false;
+  void toggleTheme(bool value) {
+    setState(() {
+      isDarkMode = value;
+    });
+  }
+  @override
+  Widget build(BuildContext context) {
+    final lightTheme = ThemeData.light().copyWith(
+      scaffoldBackgroundColor: Colors.white,
+      appBarTheme: AppBarTheme(backgroundColor: Colors.white, foregroundColor: Colors.black),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: Colors.white,
+        selectedItemColor: Colors.black,
+        unselectedItemColor: Colors.grey,
+      ),
+    );
+    final darkTheme = ThemeData.dark().copyWith(
+      scaffoldBackgroundColor: Colors.black,
+      appBarTheme: AppBarTheme(backgroundColor: Colors.black, foregroundColor: Colors.white),
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        backgroundColor: Colors.black,
+        selectedItemColor: Colors.white,
+        unselectedItemColor: Colors.grey,
+      ),
+    );
+    return MaterialApp(
+      title: 'SK Music Player',
+      theme: isDarkMode ? darkTheme : lightTheme,
+      home: HomePage(
+        toggleTheme: toggleTheme,
+        isDarkMode: isDarkMode,
+        backgroundColor: isDarkMode ? Colors.black : Colors.white,
+      ),
+    );
+  }
+}
+
+/// HomePage holds the BottomNavigationBar, AudioPlayer instance,
+/// and manages the playlist and playback modes.
+class HomePage extends StatefulWidget {
+  final Function(bool) toggleTheme;
+  final bool isDarkMode;
+  final Color backgroundColor;
+  HomePage({required this.toggleTheme, required this.isDarkMode, required this.backgroundColor});
+  @override
+  _HomePageState createState() => _HomePageState();
+}
+class _HomePageState extends State<HomePage> {
+  int _selectedIndex = 0;
   final AudioPlayer _audioPlayer = AudioPlayer();
-  List<String> _songs = [];
-  int _currentSongIndex = 0;
-  bool _isPlaying = false;
-  double _volume = 0.5; // Default volume
-  bool _isShuffle = false; // Default shuffle state
-  late SharedPreferences _prefs;
+  String? _currentSongPath;
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool isPlaying = false;
+
+  // Playlist management.
+  List<String> _playlist = [];
+  int _currentIndex = -1;
+  bool _shuffleEnabled = false;
+  RepeatModeCustom _repeatMode = RepeatModeCustom.none;
+  final Random _random = Random();
 
   @override
   void initState() {
     super.initState();
-    _initPreferences();
-    _audioPlayer.onPlayerComplete.listen((event) {
-      if (_isShuffle) {
-        _playRandomSong();
+    _audioPlayer.onDurationChanged.listen((Duration d) {
+      setState(() { _duration = d; });
+    });
+    _audioPlayer.onPositionChanged.listen((Duration p) {
+      setState(() { _position = p; });
+    });
+    _audioPlayer.onPlayerComplete.listen((_) {
+      if (_repeatMode == RepeatModeCustom.one) {
+        _playSong(_playlist[_currentIndex], _currentIndex);
+      } else if (_repeatMode == RepeatModeCustom.all) {
+        _playNext();
       } else {
-        _nextSong();
+        setState(() { isPlaying = false; });
       }
     });
   }
 
-  Future<void> _initPreferences() async {
-    _prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _volume = _prefs.getDouble('volume') ?? 0.5;
-      _isShuffle = _prefs.getBool('shuffle') ?? false;
-      _audioPlayer.setVolume(_volume);
-    });
-  }
-
-  Future<void> _saveVolume(double volume) async {
-    setState(() {
-      _volume = volume;
-      _audioPlayer.setVolume(_volume);
-    });
-    await _prefs.setDouble('volume', volume);
-  }
-
-  Future<void> _saveShuffle(bool shuffle) async {
-    setState(() {
-      _isShuffle = shuffle;
-    });
-    await _prefs.setBool('shuffle', shuffle);
-  }
-
-  Future<void> _pickSongs() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.audio, allowMultiple: true);
-    if (result != null) {
-      setState(() {
-        _songs = result.files.map((file) => file.path!).toList();
-      });
+  /// Plays the song at [path] and updates the current index.
+  void _playSong(String path, [int? index]) async {
+    if (index != null) {
+      _currentIndex = index;
+    } else {
+      _currentIndex = _playlist.indexOf(path);
     }
-  }
-
-  void _playSong(String path) async {
+    _currentSongPath = path;
     await _audioPlayer.play(DeviceFileSource(path));
-    setState(() => _isPlaying = true);
+    setState(() { isPlaying = true; });
   }
 
   void _pauseSong() async {
     await _audioPlayer.pause();
-    setState(() => _isPlaying = false);
+    setState(() { isPlaying = false; });
   }
 
-  void _nextSong() {
-    if (_songs.isEmpty) return;
+  void _resumeSong() async {
+    await _audioPlayer.resume();
+    setState(() { isPlaying = true; });
+  }
 
-    if (_currentSongIndex < _songs.length - 1) {
-      _currentSongIndex++;
+  void _seekSong(Duration position) {
+    _audioPlayer.seek(position);
+  }
+
+  void _playNext() {
+    if (_playlist.isEmpty) return;
+    if (_shuffleEnabled) {
+      int nextIndex = _random.nextInt(_playlist.length);
+      _playSong(_playlist[nextIndex], nextIndex);
     } else {
-      _currentSongIndex = 0; // Loop back to the beginning
+      int nextIndex = _currentIndex + 1;
+      if (nextIndex >= _playlist.length) nextIndex = 0;
+      _playSong(_playlist[nextIndex], nextIndex);
     }
-    _playSong(_songs[_currentSongIndex]);
   }
 
-  void _previousSong() {
-    if (_songs.isEmpty) return;
-
-    if (_currentSongIndex > 0) {
-      _currentSongIndex--;
+  void _playPrevious() {
+    if (_playlist.isEmpty) return;
+    if (_shuffleEnabled) {
+      int prevIndex = _random.nextInt(_playlist.length);
+      _playSong(_playlist[prevIndex], prevIndex);
     } else {
-      _currentSongIndex = _songs.length - 1; // Loop to the end
+      int prevIndex = _currentIndex - 1;
+      if (prevIndex < 0) prevIndex = _playlist.length - 1;
+      _playSong(_playlist[prevIndex], prevIndex);
     }
-    _playSong(_songs[_currentSongIndex]);
   }
 
-  void _playRandomSong() {
-    if (_songs.isEmpty) return;
+  void _toggleShuffle() {
+    setState(() {
+      _shuffleEnabled = !_shuffleEnabled;
+    });
+  }
 
-    final random = DateTime.now().microsecondsSinceEpoch % _songs.length;
-    _currentSongIndex = random;
-    _playSong(_songs[_currentSongIndex]);
+  void _toggleRepeatMode() {
+    setState(() {
+      if (_repeatMode == RepeatModeCustom.none) {
+        _repeatMode = RepeatModeCustom.one;
+      } else if (_repeatMode == RepeatModeCustom.one) {
+        _repeatMode = RepeatModeCustom.all;
+      } else {
+        _repeatMode = RepeatModeCustom.none;
+      }
+    });
+  }
+
+  void _updatePlaylist(List<String> playlist) {
+    setState(() {
+      _playlist = playlist;
+      if (playlist.isNotEmpty && _currentIndex == -1) {
+        _playSong(playlist[0], 0);
+      }
+    });
+  }
+
+  String _formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final minutes = twoDigits(d.inMinutes.remainder(60));
+    final seconds = twoDigits(d.inSeconds.remainder(60));
+    return '$minutes:$seconds';
   }
 
   @override
   Widget build(BuildContext context) {
+    final currentTheme = Theme.of(context);
+    final textColor = currentTheme.brightness == Brightness.dark ? Colors.white : Colors.black;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Flutter Music Player', style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.deepPurple,
+        title: Text('SK Music Player', style: TextStyle(color: textColor)),
+        backgroundColor: widget.backgroundColor,
       ),
-      body: Stack(
+      backgroundColor: widget.backgroundColor,
+      body: IndexedStack(
+        index: _selectedIndex,
         children: [
-          IndexedStack(
-            index: _currentIndex,
-            children: [
-              _buildSongsList(),
-              _buildMusicPlayer(),
-              _buildSettings(),
-            ],
+          SongsPage(
+            onSongSelected: (path) => _playSong(path, _playlist.indexOf(path)),
+            onPlaylistLoaded: _updatePlaylist,
+            currentSongPath: _currentSongPath,
+            currentSongDuration: _currentSongPath == null ? Duration.zero : _duration,
+            formatDuration: _formatDuration,
+            backgroundColor: widget.backgroundColor,
           ),
-          if (_isPlaying) _buildMiniPlayer(),
+          PlayerPage(
+            audioPlayer: _audioPlayer,
+            currentSongPath: _currentSongPath,
+            isPlaying: isPlaying,
+            onPause: _pauseSong,
+            onResume: _resumeSong,
+            position: _position,
+            duration: _duration,
+            onSeek: _seekSong,
+            onNext: _playNext,
+            onPrevious: _playPrevious,
+            onShuffle: _toggleShuffle,
+            onRepeat: _toggleRepeatMode,
+            shuffleEnabled: _shuffleEnabled,
+            repeatMode: _repeatMode,
+            formatDuration: _formatDuration,
+            backgroundColor: widget.backgroundColor,
+          ),
+          SettingsPage(
+            isDarkMode: widget.isDarkMode,
+            onThemeChanged: widget.toggleTheme,
+          ),
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.library_music), label: 'Songs'),
-          BottomNavigationBarItem(icon: Icon(Icons.music_note), label: 'Player'),
-          BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
-        ],
-        selectedItemColor: Colors.deepPurple,
-      ),
-    );
-  }
-
-  Widget _buildSongsList() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        children: [
-          ElevatedButton(
-            onPressed: _pickSongs,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.deepPurple,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Load Songs'),
-          ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: _songs.isEmpty
-                ? const Center(child: Text('No songs loaded. Please load some music.'))
-                : ListView.separated(
-              itemCount: _songs.length,
-              separatorBuilder: (context, index) => const Divider(),
-              itemBuilder: (context, index) {
-                return ListTile(
-                  title: Text(_songs[index].split('/').last),
-                  leading: const Icon(Icons.music_note),
-                  onTap: () {
-                    _currentSongIndex = index;
-                    _playSong(_songs[index]);
-                    setState(() => _currentIndex = 1);
-                  },
-                );
+      bottomNavigationBar: Container(
+        height: 120, // 40 for MiniPlayer + 80 for BottomNavigationBar.
+        color: widget.backgroundColor,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_selectedIndex != 1 && _currentSongPath != null)
+              MiniPlayer(
+                currentSongPath: _currentSongPath!,
+                isPlaying: isPlaying,
+                onPause: _pauseSong,
+                onResume: _resumeSong,
+                onNext: _playNext,
+                onPrevious: _playPrevious,
+                onShuffle: _toggleShuffle,
+                onRepeat: _toggleRepeatMode,
+                repeatMode: _repeatMode,
+                shuffleEnabled: _shuffleEnabled,
+                backgroundColor: widget.backgroundColor,
+              ),
+            BottomNavigationBar(
+              backgroundColor: widget.backgroundColor,
+              currentIndex: _selectedIndex,
+              iconSize: 28,
+              selectedFontSize: 16,
+              unselectedFontSize: 14,
+              onTap: (i) {
+                setState(() {
+                  _selectedIndex = i;
+                });
               },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMusicPlayer() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            'Now Playing: ${_songs.isNotEmpty ? _songs[_currentSongIndex].split('/').last : "No Song"}',
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 20),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.grey[200],
-              borderRadius: BorderRadius.circular(10),
-            ),
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.skip_previous, size: 40),
-                  onPressed: _previousSong,
-                ),
-                IconButton(
-                  icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow, size: 40),
-                  onPressed: () => _songs.isNotEmpty ? (_isPlaying ? _pauseSong() : _playSong(_songs[_currentSongIndex])) : null,
-                ),
-                IconButton(
-                  icon: const Icon(Icons.skip_next, size: 40),
-                  onPressed: _nextSong,
-                ),
+              items: [
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.library_music, color: textColor), label: 'Songs'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.play_arrow, color: textColor), label: 'Player'),
+                BottomNavigationBarItem(
+                    icon: Icon(Icons.settings, color: textColor), label: 'Settings'),
               ],
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMiniPlayer() {
-    return GestureDetector(
-      onTap: () => setState(() => _currentIndex = 1), // Open full player on tap
-      child: Align(
-        alignment: Alignment.bottomCenter,
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          color: Colors.grey[300],
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Text(
-                  _songs.isNotEmpty ? _songs[_currentSongIndex].split('/').last : "No Song",
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.skip_previous),
-                    onPressed: _previousSong,
-                  ),
-                  IconButton(
-                    icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                    onPressed: () => _songs.isNotEmpty ? (_isPlaying ? _pauseSong() : _playSong(_songs[_currentSongIndex])) : null,
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.skip_next),
-                    onPressed: _nextSong,
-                  ),
-                ],
-              ),
-            ],
-          ),
+          ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildSettings() {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
+/// SongsPage displays a list of songs with a default music note icon, song name, and duration.
+class SongsPage extends StatefulWidget {
+  final Function(String) onSongSelected;
+  final Function(List<String>) onPlaylistLoaded;
+  final String? currentSongPath;
+  final Duration currentSongDuration;
+  final String Function(Duration) formatDuration;
+  final Color backgroundColor;
+  SongsPage({
+    required this.onSongSelected,
+    required this.onPlaylistLoaded,
+    this.currentSongPath,
+    required this.currentSongDuration,
+    required this.formatDuration,
+    required this.backgroundColor,
+  });
+  @override
+  _SongsPageState createState() => _SongsPageState();
+}
+class _SongsPageState extends State<SongsPage> {
+  List<FileSystemEntity> audioFiles = [];
+  bool loading = true;
+  @override
+  void initState() {
+    super.initState();
+    _fetchSongs();
+  }
+  Future<void> _fetchSongs() async {
+    Map<Permission, PermissionStatus> statuses =
+        await [Permission.storage, Permission.audio].request();
+    bool granted = statuses[Permission.storage]?.isGranted == true ||
+                   statuses[Permission.audio]?.isGranted == true;
+    if (!granted) {
+      setState(() { loading = false; });
+      return;
+    }
+    Directory? extDir = await getExternalStorageDirectory();
+    List<String> dirs;
+    if (extDir != null) {
+      String basePath = extDir.parent.parent.parent.parent.path;
+      dirs = [
+        '$basePath/Music',
+        '$basePath/Download',
+        '$basePath/Songs',
+        '$basePath/Audio',
+      ];
+    } else {
+      dirs = [
+        '/storage/emulated/0/Music',
+        '/storage/emulated/0/Download',
+        '/storage/emulated/0/Songs',
+        '/storage/emulated/0/Audio',
+      ];
+    }
+    List<FileSystemEntity> files = [];
+    for (String dirPath in dirs) {
+      Directory dir = Directory(dirPath);
+      if (await dir.exists()) {
+        try {
+          var entities = dir.listSync(recursive: true);
+          files.addAll(entities.where((entity) {
+            String path = entity.path.toLowerCase();
+            return path.endsWith('.mp3') ||
+                   path.endsWith('.wav') ||
+                   path.endsWith('.m4a') ||
+                   path.endsWith('.aac');
+          }));
+        } catch (e) {
+          print("Error scanning directory $dirPath: $e");
+        }
+      }
+    }
+    setState(() {
+      audioFiles = files;
+      loading = false;
+    });
+    widget.onPlaylistLoaded(audioFiles.map((e) => e.path).toList());
+  }
+  Future<void> _selectFolder() async {
+    String? folderPath = await FilePicker.platform.getDirectoryPath();
+    if (folderPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Folder selection cancelled or restricted.')));
+      return;
+    }
+    try {
+      List<FileSystemEntity> files = Directory(folderPath)
+          .listSync(recursive: true)
+          .where((entity) {
+        String path = entity.path.toLowerCase();
+        return path.endsWith('.mp3') ||
+               path.endsWith('.wav') ||
+               path.endsWith('.m4a') ||
+               path.endsWith('.aac');
+      }).toList();
+      setState(() {
+        audioFiles = files;
+      });
+      widget.onPlaylistLoaded(files.map((e) => e.path).toList());
+      if (files.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('No audio files found in this folder.')));
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error scanning folder: $e')));
+    }
+  }
+  @override
+  Widget build(BuildContext context) {
+    final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
+    return Container(
+      color: widget.backgroundColor,
+      child: loading
+          ? Center(child: CircularProgressIndicator())
+          : audioFiles.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('No audio files found.', style: TextStyle(color: textColor)),
+                      SizedBox(height: 20),
+                      ElevatedButton(
+                        onPressed: _selectFolder,
+                        child: Text('Select Folder'),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.separated(
+                  itemCount: audioFiles.length,
+                  separatorBuilder: (context, index) => Divider(color: textColor.withOpacity(0.6)),
+                  itemBuilder: (context, index) {
+                    String filePath = audioFiles[index].path;
+                    String fileName = filePath.split('/').last;
+                    String durationText = (widget.currentSongPath == filePath)
+                        ? widget.currentSongDuration.inSeconds > 0
+                            ? widget.formatDuration(widget.currentSongDuration)
+                            : "00:00"
+                        : "00:00";
+                    return ListTile(
+                      leading: Icon(Icons.music_note_outlined, color: textColor),
+                      title: Row(
+                        children: [
+                          Expanded(
+                              child: Text(fileName,
+                                  style: TextStyle(fontWeight: FontWeight.w500, color: textColor))),
+                          Text(durationText,
+                              style: TextStyle(color: textColor.withOpacity(0.7))),
+                        ],
+                      ),
+                      onTap: () { widget.onSongSelected(filePath); },
+                    );
+                  },
+                ),
+    );
+  }
+}
+
+/// PlayerPage displays a full‑screen player with a 40% song image, seek bar with time, and icon-only controls.
+class PlayerPage extends StatefulWidget {
+  final AudioPlayer audioPlayer;
+  final String? currentSongPath;
+  final bool isPlaying;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final Duration position;
+  final Duration duration;
+  final Function(Duration) onSeek;
+  final VoidCallback onNext;
+  final VoidCallback onPrevious;
+  final VoidCallback onShuffle;
+  final VoidCallback onRepeat;
+  final bool shuffleEnabled;
+  final RepeatModeCustom repeatMode;
+  final String Function(Duration) formatDuration;
+  final Color backgroundColor;
+  PlayerPage({
+    required this.audioPlayer,
+    required this.currentSongPath,
+    required this.isPlaying,
+    required this.onPause,
+    required this.onResume,
+    required this.position,
+    required this.duration,
+    required this.onSeek,
+    required this.onNext,
+    required this.onPrevious,
+    required this.onShuffle,
+    required this.onRepeat,
+    required this.shuffleEnabled,
+    required this.repeatMode,
+    required this.formatDuration,
+    required this.backgroundColor,
+  });
+  @override
+  _PlayerPageState createState() => _PlayerPageState();
+}
+class _PlayerPageState extends State<PlayerPage> {
+  double volume = 1.0;
+  void _changeVolume(double value) {
+    setState(() {
+      volume = value;
+    });
+    widget.audioPlayer.setVolume(volume);
+  }
+  @override
+  Widget build(BuildContext context) {
+    if (widget.currentSongPath == null)
+      return Center(child: Text('No song selected.', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black)));
+    String songName = widget.currentSongPath!.split('/').last;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
+    return Container(
+      height: screenHeight,
+      decoration: BoxDecoration(color: widget.backgroundColor),
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Settings', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 20),
+          // Song image takes 40% of screen height.
+          Container(
+            height: screenHeight * 0.40,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              image: DecorationImage(
+                image: AssetImage('assets/song_logo.png'),
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+          SizedBox(height: 8),
+          Text(songName,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: textColor)),
+          SizedBox(height: 4),
+          // Current time and total duration.
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Volume'),
-              Slider(
-                value: _volume,
-                min: 0,
-                max: 1,
-                onChanged: (value) => _saveVolume(value),
+              Text(widget.formatDuration(widget.position), style: TextStyle(color: textColor)),
+              Text(widget.formatDuration(widget.duration), style: TextStyle(color: textColor)),
+            ],
+          ),
+          SizedBox(height: 4),
+          Slider(
+            activeColor: textColor,
+            inactiveColor: textColor.withOpacity(0.5),
+            value: widget.position.inSeconds.toDouble(),
+            max: widget.duration.inSeconds > 0 ? widget.duration.inSeconds.toDouble() : 1,
+            onChanged: (value) {
+              widget.onSeek(Duration(seconds: value.toInt()));
+            },
+          ),
+          SizedBox(height: 8),
+          // Control buttons.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              IconButton(icon: Icon(Icons.skip_previous, size: 36, color: textColor), onPressed: widget.onPrevious),
+              IconButton(
+                icon: Icon(widget.isPlaying ? Icons.pause : Icons.play_arrow, size: 64, color: textColor),
+                onPressed: () {
+                  widget.isPlaying ? widget.onPause() : widget.onResume();
+                },
+              ),
+              IconButton(icon: Icon(Icons.skip_next, size: 36, color: textColor), onPressed: widget.onNext),
+              IconButton(icon: Icon(Icons.shuffle, size: 36, color: widget.shuffleEnabled ? textColor.withOpacity(0.7) : textColor), onPressed: widget.onShuffle),
+              IconButton(
+                icon: widget.repeatMode == RepeatModeCustom.none
+                    ? Icon(Icons.repeat, size: 36, color: textColor.withOpacity(0.5))
+                    : widget.repeatMode == RepeatModeCustom.one
+                        ? Icon(Icons.repeat_one, size: 36, color: textColor)
+                        : Icon(Icons.repeat, size: 36, color: textColor),
+                onPressed: widget.onRepeat,
               ),
             ],
           ),
+          SizedBox(height: 8),
+          // Volume slider.
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Shuffle'),
-              Switch(
-                value: _isShuffle,
-                onChanged: (value) => _saveShuffle(value),
+              Icon(Icons.volume_down, color: textColor),
+              Expanded(
+                child: Slider(
+                  activeColor: textColor,
+                  inactiveColor: textColor.withOpacity(0.5),
+                  value: volume,
+                  min: 0,
+                  max: 1,
+                  onChanged: _changeVolume,
+                ),
               ),
+              Icon(Icons.volume_up, color: textColor),
             ],
           ),
         ],
       ),
     );
   }
+}
+
+/// MiniPlayer displays a compact control bar with icon-only controls, placed just above the BottomNavigationBar.
+class MiniPlayer extends StatelessWidget {
+  final String currentSongPath;
+  final bool isPlaying;
+  final VoidCallback onPause;
+  final VoidCallback onResume;
+  final VoidCallback onNext;
+  final VoidCallback onPrevious;
+  final VoidCallback onShuffle;
+  final VoidCallback onRepeat;
+  final RepeatModeCustom repeatMode;
+  final bool shuffleEnabled;
+  final Color backgroundColor;
+  MiniPlayer({
+    required this.currentSongPath,
+    required this.isPlaying,
+    required this.onPause,
+    required this.onResume,
+    required this.onNext,
+    required this.onPrevious,
+    required this.onShuffle,
+    required this.onRepeat,
+    required this.repeatMode,
+    required this.shuffleEnabled,
+    required this.backgroundColor,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
+    String songName = currentSongPath.split('/').last;
+    return Container(
+      height: 40,
+      color: backgroundColor,
+      child: Row(
+        children: [
+          IconButton(icon: Icon(Icons.skip_previous, color: textColor, size: 24), onPressed: onPrevious),
+          IconButton(icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow, color: textColor, size: 24), onPressed: () => isPlaying ? onPause() : onResume()),
+          IconButton(icon: Icon(Icons.skip_next, color: textColor, size: 24), onPressed: onNext),
+          IconButton(icon: Icon(Icons.shuffle, color: shuffleEnabled ? textColor.withOpacity(0.7) : textColor, size: 24), onPressed: onShuffle),
+          IconButton(
+            icon: repeatMode == RepeatModeCustom.none
+                ? Icon(Icons.repeat, color: textColor.withOpacity(0.5), size: 24)
+                : repeatMode == RepeatModeCustom.one
+                    ? Icon(Icons.repeat_one, color: textColor, size: 24)
+                    : Icon(Icons.repeat, color: textColor, size: 24),
+            onPressed: onRepeat,
+          ),
+          SizedBox(width: 4),
+          Icon(Icons.music_note_outlined, color: textColor, size: 24),
+          SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              songName,
+              style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 12),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// SettingsPage provides a switch to toggle light/dark mode.
+class SettingsPage extends StatelessWidget {
+  final bool isDarkMode;
+  final Function(bool) onThemeChanged;
+  SettingsPage({required this.isDarkMode, required this.onThemeChanged});
+  @override
+  Widget build(BuildContext context) {
+    final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
+    return Center(
+      child: SwitchListTile(
+        title: Text('Dark Mode', style: TextStyle(color: textColor)),
+        value: isDarkMode,
+        onChanged: onThemeChanged,
+      ),
+    );
+  }
+}
+
+/// Returns a simple black-and-white gradient for the PlayerPage.
+LinearGradient getBWGradient() {
+  return LinearGradient(
+    colors: [Colors.black, Colors.grey.shade900],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
 }
