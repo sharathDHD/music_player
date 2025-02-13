@@ -10,7 +10,6 @@ void main() {
   runApp(MyApp());
 }
 
-///
 /// Ensure your pubspec.yaml includes:
 ///   audioplayers: ^6.1.2
 ///   permission_handler: ^11.3.1
@@ -19,7 +18,6 @@ void main() {
 ///
 /// Also configure your native splash screen and app icon to use
 /// assets/song_logo.png (which should have a transparent background).
-///
 
 enum RepeatModeCustom { none, one, all }
 
@@ -79,19 +77,17 @@ class _MyAppState extends State<MyApp> {
       home: HomePage(
         toggleTheme: toggleTheme,
         isDarkMode: isDarkMode,
-        backgroundColor: isDarkMode ? Colors.black : Colors.white,
       ),
     );
   }
 }
 
 /// HomePage holds the BottomNavigationBar, AudioPlayer instance,
-/// and manages the playlist and playback modes.
+/// and manages the playlist, playback modes, favorites, and queue.
 class HomePage extends StatefulWidget {
   final Function(bool) toggleTheme;
   final bool isDarkMode;
-  final Color backgroundColor;
-  HomePage({required this.toggleTheme, required this.isDarkMode, required this.backgroundColor});
+  HomePage({required this.toggleTheme, required this.isDarkMode});
   @override
   _HomePageState createState() => _HomePageState();
 }
@@ -103,12 +99,13 @@ class _HomePageState extends State<HomePage> {
   Duration _duration = Duration.zero;
   bool isPlaying = false;
 
-  // Playlist management.
+  // Playlist and favorites management.
   List<String> _playlist = [];
   int _currentIndex = -1;
   bool _shuffleEnabled = false;
   RepeatModeCustom _repeatMode = RepeatModeCustom.none;
   final Random _random = Random();
+  Set<String> _favorites = {};
 
   @override
   void initState() {
@@ -214,16 +211,54 @@ class _HomePageState extends State<HomePage> {
     return '$minutes:$seconds';
   }
 
+  void _toggleFavorite(String path) {
+    setState(() {
+      if (_favorites.contains(path)) {
+        _favorites.remove(path);
+      } else {
+        _favorites.add(path);
+      }
+    });
+  }
+
+  void _showQueue() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return Container(
+          color: widget.isDarkMode ? Colors.grey[900] : Colors.grey[200],
+          child: ListView.separated(
+            padding: EdgeInsets.all(16),
+            itemCount: _playlist.length,
+            separatorBuilder: (context, index) => Divider(),
+            itemBuilder: (context, index) {
+              String songPath = _playlist[index];
+              String songName = songPath.split('/').last;
+              return ListTile(
+                title: Text(songName, style: TextStyle(fontSize: 16)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _playSong(songPath, index);
+                },
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final currentTheme = Theme.of(context);
-    final textColor = currentTheme.brightness == Brightness.dark ? Colors.white : Colors.black;
+    final brightness = widget.isDarkMode ? Brightness.dark : Brightness.light;
+    final backgroundColor = widget.isDarkMode ? Colors.black : Colors.white;
+    final textColor = widget.isDarkMode ? Colors.white : Colors.black;
     return Scaffold(
       appBar: AppBar(
-        title: Text('SK Music Player', style: TextStyle(color: textColor)),
-        backgroundColor: widget.backgroundColor,
+        title: Text('SK Music Player', style: TextStyle(color: textColor, fontWeight: FontWeight.bold)),
+        backgroundColor: backgroundColor,
+        elevation: 0,
       ),
-      backgroundColor: widget.backgroundColor,
       body: IndexedStack(
         index: _selectedIndex,
         children: [
@@ -233,7 +268,15 @@ class _HomePageState extends State<HomePage> {
             currentSongPath: _currentSongPath,
             currentSongDuration: _currentSongPath == null ? Duration.zero : _duration,
             formatDuration: _formatDuration,
-            backgroundColor: widget.backgroundColor,
+            backgroundColor: backgroundColor,
+            favorites: _favorites,
+            onToggleFavorite: _toggleFavorite,
+          ),
+          FavoritesPage(
+            favorites: _favorites.toList(),
+            onSongSelected: (path) => _playSong(path, _playlist.indexOf(path)),
+            formatDuration: _formatDuration,
+            backgroundColor: backgroundColor,
           ),
           PlayerPage(
             audioPlayer: _audioPlayer,
@@ -251,7 +294,8 @@ class _HomePageState extends State<HomePage> {
             shuffleEnabled: _shuffleEnabled,
             repeatMode: _repeatMode,
             formatDuration: _formatDuration,
-            backgroundColor: widget.backgroundColor,
+            backgroundColor: backgroundColor,
+            onShowQueue: _showQueue,
           ),
           SettingsPage(
             isDarkMode: widget.isDarkMode,
@@ -260,12 +304,12 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       bottomNavigationBar: Container(
-        height: 120, // 40 for MiniPlayer + 80 for BottomNavigationBar.
-        color: widget.backgroundColor,
+        padding: EdgeInsets.only(top: 8),
+        color: backgroundColor,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_selectedIndex != 1 && _currentSongPath != null)
+            if (_selectedIndex != 2 && _currentSongPath != null)
               MiniPlayer(
                 currentSongPath: _currentSongPath!,
                 isPlaying: isPlaying,
@@ -277,10 +321,10 @@ class _HomePageState extends State<HomePage> {
                 onRepeat: _toggleRepeatMode,
                 repeatMode: _repeatMode,
                 shuffleEnabled: _shuffleEnabled,
-                backgroundColor: widget.backgroundColor,
+                backgroundColor: backgroundColor,
               ),
             BottomNavigationBar(
-              backgroundColor: widget.backgroundColor,
+              backgroundColor: backgroundColor,
               currentIndex: _selectedIndex,
               iconSize: 28,
               selectedFontSize: 16,
@@ -294,6 +338,8 @@ class _HomePageState extends State<HomePage> {
                 BottomNavigationBarItem(
                     icon: Icon(Icons.library_music, color: textColor), label: 'Songs'),
                 BottomNavigationBarItem(
+                    icon: Icon(Icons.favorite, color: textColor), label: 'Favorites'),
+                BottomNavigationBarItem(
                     icon: Icon(Icons.play_arrow, color: textColor), label: 'Player'),
                 BottomNavigationBarItem(
                     icon: Icon(Icons.settings, color: textColor), label: 'Settings'),
@@ -306,7 +352,7 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// SongsPage displays a list of songs with a default music note icon, song name, and duration.
+/// SongsPage displays a list of songs with improved spacing, styling, and favorite functionality.
 class SongsPage extends StatefulWidget {
   final Function(String) onSongSelected;
   final Function(List<String>) onPlaylistLoaded;
@@ -314,6 +360,8 @@ class SongsPage extends StatefulWidget {
   final Duration currentSongDuration;
   final String Function(Duration) formatDuration;
   final Color backgroundColor;
+  final Set<String> favorites;
+  final Function(String) onToggleFavorite;
   SongsPage({
     required this.onSongSelected,
     required this.onPlaylistLoaded,
@@ -321,6 +369,8 @@ class SongsPage extends StatefulWidget {
     required this.currentSongDuration,
     required this.formatDuration,
     required this.backgroundColor,
+    required this.favorites,
+    required this.onToggleFavorite,
   });
   @override
   _SongsPageState createState() => _SongsPageState();
@@ -335,9 +385,9 @@ class _SongsPageState extends State<SongsPage> {
   }
   Future<void> _fetchSongs() async {
     Map<Permission, PermissionStatus> statuses =
-        await [Permission.storage, Permission.audio].request();
+    await [Permission.storage, Permission.audio].request();
     bool granted = statuses[Permission.storage]?.isGranted == true ||
-                   statuses[Permission.audio]?.isGranted == true;
+        statuses[Permission.audio]?.isGranted == true;
     if (!granted) {
       setState(() { loading = false; });
       return;
@@ -369,9 +419,9 @@ class _SongsPageState extends State<SongsPage> {
           files.addAll(entities.where((entity) {
             String path = entity.path.toLowerCase();
             return path.endsWith('.mp3') ||
-                   path.endsWith('.wav') ||
-                   path.endsWith('.m4a') ||
-                   path.endsWith('.aac');
+                path.endsWith('.wav') ||
+                path.endsWith('.m4a') ||
+                path.endsWith('.aac');
           }));
         } catch (e) {
           print("Error scanning directory $dirPath: $e");
@@ -397,9 +447,9 @@ class _SongsPageState extends State<SongsPage> {
           .where((entity) {
         String path = entity.path.toLowerCase();
         return path.endsWith('.mp3') ||
-               path.endsWith('.wav') ||
-               path.endsWith('.m4a') ||
-               path.endsWith('.aac');
+            path.endsWith('.wav') ||
+            path.endsWith('.m4a') ||
+            path.endsWith('.aac');
       }).toList();
       setState(() {
         audioFiles = files;
@@ -419,53 +469,96 @@ class _SongsPageState extends State<SongsPage> {
     final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
     return Container(
       color: widget.backgroundColor,
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: loading
           ? Center(child: CircularProgressIndicator())
           : audioFiles.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text('No audio files found.', style: TextStyle(color: textColor)),
-                      SizedBox(height: 20),
-                      ElevatedButton(
-                        onPressed: _selectFolder,
-                        child: Text('Select Folder'),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.separated(
-                  itemCount: audioFiles.length,
-                  separatorBuilder: (context, index) => Divider(color: textColor.withOpacity(0.6)),
-                  itemBuilder: (context, index) {
-                    String filePath = audioFiles[index].path;
-                    String fileName = filePath.split('/').last;
-                    String durationText = (widget.currentSongPath == filePath)
-                        ? widget.currentSongDuration.inSeconds > 0
-                            ? widget.formatDuration(widget.currentSongDuration)
-                            : "00:00"
-                        : "00:00";
-                    return ListTile(
-                      leading: Icon(Icons.music_note_outlined, color: textColor),
-                      title: Row(
-                        children: [
-                          Expanded(
-                              child: Text(fileName,
-                                  style: TextStyle(fontWeight: FontWeight.w500, color: textColor))),
-                          Text(durationText,
-                              style: TextStyle(color: textColor.withOpacity(0.7))),
-                        ],
-                      ),
-                      onTap: () { widget.onSongSelected(filePath); },
-                    );
-                  },
-                ),
+          ? Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('No audio files found.', style: TextStyle(color: textColor, fontSize: 18)),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _selectFolder,
+              child: Text('Select Folder'),
+            ),
+          ],
+        ),
+      )
+          : ListView.separated(
+        itemCount: audioFiles.length,
+        separatorBuilder: (context, index) => Divider(color: textColor.withOpacity(0.6)),
+        itemBuilder: (context, index) {
+          String filePath = audioFiles[index].path;
+          String fileName = filePath.split('/').last;
+          String durationText = (widget.currentSongPath == filePath)
+              ? widget.currentSongDuration.inSeconds > 0
+              ? widget.formatDuration(widget.currentSongDuration)
+              : "00:00"
+              : "00:00";
+          bool isFavorite = widget.favorites.contains(filePath);
+          return ListTile(
+            contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            leading: Icon(Icons.music_note_outlined, color: textColor, size: 28),
+            title: Text(fileName,
+                style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16, color: textColor)),
+            subtitle: Text(durationText, style: TextStyle(color: textColor.withOpacity(0.7))),
+            trailing: IconButton(
+              icon: Icon(isFavorite ? Icons.favorite : Icons.favorite_border,
+                  color: isFavorite ? Colors.red : textColor),
+              onPressed: () {
+                widget.onToggleFavorite(filePath);
+              },
+            ),
+            onTap: () { widget.onSongSelected(filePath); },
+          );
+        },
+      ),
     );
   }
 }
 
-/// PlayerPage displays a full‑screen player with a 40% song image, seek bar with time, and icon-only controls.
+/// FavoritesPage displays the list of favorite songs.
+class FavoritesPage extends StatelessWidget {
+  final List<String> favorites;
+  final Function(String) onSongSelected;
+  final String Function(Duration) formatDuration;
+  final Color backgroundColor;
+  FavoritesPage({
+    required this.favorites,
+    required this.onSongSelected,
+    required this.formatDuration,
+    required this.backgroundColor,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
+    return Container(
+      color: backgroundColor,
+      padding: EdgeInsets.all(16),
+      child: favorites.isEmpty
+          ? Center(child: Text('No favorite songs yet.', style: TextStyle(fontSize: 18, color: textColor)))
+          : ListView.separated(
+        itemCount: favorites.length,
+        separatorBuilder: (context, index) => Divider(color: textColor.withOpacity(0.6)),
+        itemBuilder: (context, index) {
+          String filePath = favorites[index];
+          String fileName = filePath.split('/').last;
+          return ListTile(
+            contentPadding: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+            leading: Icon(Icons.music_note, color: textColor, size: 28),
+            title: Text(fileName,
+                style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16, color: textColor)),
+            onTap: () => onSongSelected(filePath),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// PlayerPage displays a full‑screen player with improved UI, including a queue feature.
 class PlayerPage extends StatefulWidget {
   final AudioPlayer audioPlayer;
   final String? currentSongPath;
@@ -483,6 +576,7 @@ class PlayerPage extends StatefulWidget {
   final RepeatModeCustom repeatMode;
   final String Function(Duration) formatDuration;
   final Color backgroundColor;
+  final VoidCallback onShowQueue;
   PlayerPage({
     required this.audioPlayer,
     required this.currentSongPath,
@@ -500,6 +594,7 @@ class PlayerPage extends StatefulWidget {
     required this.repeatMode,
     required this.formatDuration,
     required this.backgroundColor,
+    required this.onShowQueue,
   });
   @override
   _PlayerPageState createState() => _PlayerPageState();
@@ -515,7 +610,7 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   Widget build(BuildContext context) {
     if (widget.currentSongPath == null)
-      return Center(child: Text('No song selected.', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black)));
+      return Center(child: Text('No song selected.', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black, fontSize: 18)));
     String songName = widget.currentSongPath!.split('/').last;
     final screenHeight = MediaQuery.of(context).size.height;
     final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
@@ -537,11 +632,11 @@ class _PlayerPageState extends State<PlayerPage> {
               ),
             ),
           ),
-          SizedBox(height: 8),
+          SizedBox(height: 12),
           Text(songName,
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: textColor)),
-          SizedBox(height: 4),
+          SizedBox(height: 8),
           // Current time and total duration.
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -560,31 +655,32 @@ class _PlayerPageState extends State<PlayerPage> {
               widget.onSeek(Duration(seconds: value.toInt()));
             },
           ),
-          SizedBox(height: 8),
-          // Control buttons.
+          SizedBox(height: 12),
+          // Control buttons with added Queue button.
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
+              IconButton(icon: Icon(Icons.queue_music, size: 32, color: textColor), onPressed: widget.onShowQueue),
               IconButton(icon: Icon(Icons.skip_previous, size: 36, color: textColor), onPressed: widget.onPrevious),
               IconButton(
-                icon: Icon(widget.isPlaying ? Icons.pause : Icons.play_arrow, size: 64, color: textColor),
+                icon: Icon(widget.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill, size: 64, color: textColor),
                 onPressed: () {
                   widget.isPlaying ? widget.onPause() : widget.onResume();
                 },
               ),
               IconButton(icon: Icon(Icons.skip_next, size: 36, color: textColor), onPressed: widget.onNext),
-              IconButton(icon: Icon(Icons.shuffle, size: 36, color: widget.shuffleEnabled ? textColor.withOpacity(0.7) : textColor), onPressed: widget.onShuffle),
+              IconButton(icon: Icon(Icons.shuffle, size: 36, color: widget.shuffleEnabled ? textColor.withOpacity(0.8) : textColor), onPressed: widget.onShuffle),
               IconButton(
                 icon: widget.repeatMode == RepeatModeCustom.none
                     ? Icon(Icons.repeat, size: 36, color: textColor.withOpacity(0.5))
                     : widget.repeatMode == RepeatModeCustom.one
-                        ? Icon(Icons.repeat_one, size: 36, color: textColor)
-                        : Icon(Icons.repeat, size: 36, color: textColor),
+                    ? Icon(Icons.repeat_one, size: 36, color: textColor)
+                    : Icon(Icons.repeat, size: 36, color: textColor),
                 onPressed: widget.onRepeat,
               ),
             ],
           ),
-          SizedBox(height: 8),
+          SizedBox(height: 12),
           // Volume slider.
           Row(
             children: [
@@ -639,7 +735,8 @@ class MiniPlayer extends StatelessWidget {
     final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
     String songName = currentSongPath.split('/').last;
     return Container(
-      height: 40,
+      padding: EdgeInsets.symmetric(horizontal: 8),
+      height: 48,
       color: backgroundColor,
       child: Row(
         children: [
@@ -651,8 +748,8 @@ class MiniPlayer extends StatelessWidget {
             icon: repeatMode == RepeatModeCustom.none
                 ? Icon(Icons.repeat, color: textColor.withOpacity(0.5), size: 24)
                 : repeatMode == RepeatModeCustom.one
-                    ? Icon(Icons.repeat_one, color: textColor, size: 24)
-                    : Icon(Icons.repeat, color: textColor, size: 24),
+                ? Icon(Icons.repeat_one, color: textColor, size: 24)
+                : Icon(Icons.repeat, color: textColor, size: 24),
             onPressed: onRepeat,
           ),
           SizedBox(width: 4),
@@ -661,7 +758,7 @@ class MiniPlayer extends StatelessWidget {
           Expanded(
             child: Text(
               songName,
-              style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 12),
+              style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 14),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -681,7 +778,7 @@ class SettingsPage extends StatelessWidget {
     final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
     return Center(
       child: SwitchListTile(
-        title: Text('Dark Mode', style: TextStyle(color: textColor)),
+        title: Text('Dark Mode', style: TextStyle(color: textColor, fontSize: 18)),
         value: isDarkMode,
         onChanged: onThemeChanged,
       ),
