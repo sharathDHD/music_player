@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -25,7 +26,7 @@ enum RepeatModeCustom { none, one, all }
 LinearGradient getGradient(Brightness brightness) {
   if (brightness == Brightness.dark) {
     return LinearGradient(
-      colors: [Colors.black, Colors.grey.shade900],
+      colors: [Colors.grey[900]!, Colors.black],
       begin: Alignment.topLeft,
       end: Alignment.bottomRight,
     );
@@ -43,14 +44,29 @@ class MyApp extends StatefulWidget {
   _MyAppState createState() => _MyAppState();
 }
 
-/// The app supports light and dark modes.
+/// _MyAppState manages the global theme and accent color.
 class _MyAppState extends State<MyApp> {
   bool isDarkMode = false;
+  Color accentColor = Colors.blueAccent;
+
   void toggleTheme(bool value) {
     setState(() {
       isDarkMode = value;
+      // Optionally, change the accent color for dark mode if needed.
+      if (isDarkMode && accentColor == Colors.blueAccent) {
+        accentColor = Colors.deepPurpleAccent;
+      } else if (!isDarkMode && accentColor == Colors.deepPurpleAccent) {
+        accentColor = Colors.blueAccent;
+      }
     });
   }
+
+  void updateAccentColor(Color newColor) {
+    setState(() {
+      accentColor = newColor;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final lightTheme = ThemeData.light().copyWith(
@@ -58,36 +74,48 @@ class _MyAppState extends State<MyApp> {
       appBarTheme: AppBarTheme(backgroundColor: Colors.white, foregroundColor: Colors.black),
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
         backgroundColor: Colors.white,
-        selectedItemColor: Colors.black,
+        selectedItemColor: accentColor,
         unselectedItemColor: Colors.grey,
       ),
+      colorScheme: ColorScheme.light(secondary: accentColor),
     );
     final darkTheme = ThemeData.dark().copyWith(
-      scaffoldBackgroundColor: Colors.black,
-      appBarTheme: AppBarTheme(backgroundColor: Colors.black, foregroundColor: Colors.white),
+      scaffoldBackgroundColor: Colors.grey[900],
+      appBarTheme: AppBarTheme(backgroundColor: Colors.grey[900], foregroundColor: Colors.white),
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
-        backgroundColor: Colors.black,
-        selectedItemColor: Colors.white,
+        backgroundColor: Colors.grey[900],
+        selectedItemColor: accentColor,
         unselectedItemColor: Colors.grey,
       ),
+      colorScheme: ColorScheme.dark(secondary: accentColor),
     );
     return MaterialApp(
       title: 'SK Music Player',
       theme: isDarkMode ? darkTheme : lightTheme,
+      debugShowCheckedModeBanner: false,
       home: HomePage(
         toggleTheme: toggleTheme,
         isDarkMode: isDarkMode,
+        accentColor: accentColor,
+        onAccentColorChanged: updateAccentColor,
       ),
     );
   }
 }
 
 /// HomePage holds the BottomNavigationBar, AudioPlayer instance,
-/// and manages the playlist, playback modes, favorites, and queue.
+/// and manages the playlist, playback modes, favorites, sleep timer, and queue.
 class HomePage extends StatefulWidget {
   final Function(bool) toggleTheme;
   final bool isDarkMode;
-  HomePage({required this.toggleTheme, required this.isDarkMode});
+  final Color accentColor;
+  final Function(Color) onAccentColorChanged;
+  HomePage({
+    required this.toggleTheme,
+    required this.isDarkMode,
+    required this.accentColor,
+    required this.onAccentColorChanged,
+  });
   @override
   _HomePageState createState() => _HomePageState();
 }
@@ -106,6 +134,11 @@ class _HomePageState extends State<HomePage> {
   RepeatModeCustom _repeatMode = RepeatModeCustom.none;
   final Random _random = Random();
   Set<String> _favorites = {};
+
+  // Sleep Timer variables.
+  int _sleepTimerDuration = 0; // in minutes
+  bool _isSleepTimerRunning = false;
+  Timer? _sleepTimer;
 
   @override
   void initState() {
@@ -221,12 +254,18 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  void _clearFavorites() {
+    setState(() {
+      _favorites.clear();
+    });
+  }
+
   void _showQueue() {
     showModalBottomSheet(
       context: context,
       builder: (context) {
         return Container(
-          color: widget.isDarkMode ? Colors.grey[900] : Colors.grey[200],
+          color: widget.isDarkMode ? Colors.grey[800] : Colors.grey[200],
           child: ListView.separated(
             padding: EdgeInsets.all(16),
             itemCount: _playlist.length,
@@ -248,10 +287,38 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // Sleep Timer Methods
+  void _startSleepTimer(int minutes) {
+    _cancelSleepTimer(); // cancel existing timer if any
+    if (minutes > 0) {
+      setState(() {
+        _sleepTimerDuration = minutes;
+        _isSleepTimerRunning = true;
+      });
+      _sleepTimer = Timer(Duration(minutes: minutes), () {
+        _pauseSong();
+        setState(() {
+          _isSleepTimerRunning = false;
+          _sleepTimerDuration = 0;
+        });
+      });
+    }
+  }
+
+  void _cancelSleepTimer() {
+    if (_sleepTimer != null) {
+      _sleepTimer!.cancel();
+    }
+    setState(() {
+      _isSleepTimerRunning = false;
+      _sleepTimerDuration = 0;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final brightness = widget.isDarkMode ? Brightness.dark : Brightness.light;
-    final backgroundColor = widget.isDarkMode ? Colors.black : Colors.white;
+    final backgroundColor = widget.isDarkMode ? Colors.grey[900]! : Colors.white;
     final textColor = widget.isDarkMode ? Colors.white : Colors.black;
     return Scaffold(
       appBar: AppBar(
@@ -300,6 +367,13 @@ class _HomePageState extends State<HomePage> {
           SettingsPage(
             isDarkMode: widget.isDarkMode,
             onThemeChanged: widget.toggleTheme,
+            currentAccentColor: widget.accentColor,
+            onAccentColorChanged: widget.onAccentColorChanged,
+            sleepTimerDuration: _sleepTimerDuration,
+            isSleepTimerRunning: _isSleepTimerRunning,
+            onStartSleepTimer: _startSleepTimer,
+            onCancelSleepTimer: _cancelSleepTimer,
+            onClearFavorites: _clearFavorites,
           ),
         ],
       ),
@@ -768,19 +842,122 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-/// SettingsPage provides a switch to toggle light/dark mode.
-class SettingsPage extends StatelessWidget {
+/// SettingsPage provides controls to toggle dark mode, choose an accent color,
+/// set up a sleep timer, and clear favorites.
+class SettingsPage extends StatefulWidget {
   final bool isDarkMode;
   final Function(bool) onThemeChanged;
-  SettingsPage({required this.isDarkMode, required this.onThemeChanged});
+  final Color currentAccentColor;
+  final Function(Color) onAccentColorChanged;
+  final int sleepTimerDuration;
+  final bool isSleepTimerRunning;
+  final Function(int) onStartSleepTimer;
+  final VoidCallback onCancelSleepTimer;
+  final VoidCallback onClearFavorites;
+  SettingsPage({
+    required this.isDarkMode,
+    required this.onThemeChanged,
+    required this.currentAccentColor,
+    required this.onAccentColorChanged,
+    required this.sleepTimerDuration,
+    required this.isSleepTimerRunning,
+    required this.onStartSleepTimer,
+    required this.onCancelSleepTimer,
+    required this.onClearFavorites,
+  });
+  @override
+  _SettingsPageState createState() => _SettingsPageState();
+}
+class _SettingsPageState extends State<SettingsPage> {
+  // Local value for the sleep timer slider.
+  double _selectedSleepMinutes = 0;
+  // Predefined accent colors.
+  final Map<String, Color> accentColors = {
+    'Blue': Colors.blueAccent,
+    'Red': Colors.redAccent,
+    'Green': Colors.green,
+    'Purple': Colors.deepPurpleAccent,
+    'Orange': Colors.orangeAccent,
+  };
+
   @override
   Widget build(BuildContext context) {
     final textColor = Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black;
-    return Center(
-      child: SwitchListTile(
-        title: Text('Dark Mode', style: TextStyle(color: textColor, fontSize: 18)),
-        value: isDarkMode,
-        onChanged: onThemeChanged,
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Dark mode toggle.
+          SwitchListTile(
+            title: Text('Dark Mode', style: TextStyle(color: textColor, fontSize: 18)),
+            value: widget.isDarkMode,
+            onChanged: widget.onThemeChanged,
+          ),
+          SizedBox(height: 16),
+          // Accent color selection.
+          Text('Accent Color', style: TextStyle(fontSize: 16, color: textColor)),
+          DropdownButton<Color>(
+            value: widget.currentAccentColor,
+            dropdownColor: widget.isDarkMode ? Colors.grey[800] : Colors.white,
+            onChanged: (Color? newColor) {
+              if (newColor != null) {
+                widget.onAccentColorChanged(newColor);
+              }
+            },
+            items: accentColors.entries.map((entry) {
+              return DropdownMenuItem<Color>(
+                value: entry.value,
+                child: Text(entry.key, style: TextStyle(color: textColor)),
+              );
+            }).toList(),
+          ),
+          SizedBox(height: 16),
+          // Sleep Timer.
+          Text('Sleep Timer (minutes)', style: TextStyle(fontSize: 16, color: textColor)),
+          Slider(
+            value: _selectedSleepMinutes,
+            min: 0,
+            max: 60,
+            divisions: 60,
+            label: _selectedSleepMinutes.round().toString(),
+            onChanged: (value) {
+              setState(() {
+                _selectedSleepMinutes = value;
+              });
+            },
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              widget.isSleepTimerRunning
+                  ? ElevatedButton(
+                onPressed: widget.onCancelSleepTimer,
+                style: ElevatedButton.styleFrom(backgroundColor: widget.currentAccentColor),
+
+                child: Text('Cancel Timer'),
+              )
+                  : ElevatedButton(
+                onPressed: () {
+                  widget.onStartSleepTimer(_selectedSleepMinutes.round());
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: widget.currentAccentColor),
+                child: Text('Start Timer'),
+              ),
+              widget.isSleepTimerRunning
+                  ? Text('Timer: ${widget.sleepTimerDuration} min', style: TextStyle(color: textColor))
+                  : Container(),
+            ],
+          ),
+          SizedBox(height: 16),
+          // Clear Favorites.
+          ElevatedButton(
+            onPressed: widget.onClearFavorites,
+            style: ElevatedButton.styleFrom(backgroundColor: widget.currentAccentColor),
+
+            child: Text('Clear Favorites'),
+          ),
+        ],
       ),
     );
   }
